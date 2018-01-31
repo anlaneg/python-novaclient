@@ -17,6 +17,8 @@ novaclient/versioninfo
 *.egg
 *egg-info
 .eggs
+.project
+.pydevproject
 
 # Files created by documentation build
 /doc/build/
