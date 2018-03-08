@@ -103,8 +103,11 @@ def add_arg(func, *args, **kwargs):
 
 def service_type(stype):
     """Adds 'service_type' attribute to decorated function.
+
     Usage:
+
     .. code-block:: python
+
        @service_type('volume')
        def mymethod(f):
        ...
@@ -113,43 +116,6 @@ def service_type(stype):
         f.service_type = stype
         return f
     return inner
-
-
-def add_resource_manager_extra_kwargs_hook(f, hook):
-    """Add hook to bind CLI arguments to ResourceManager calls.
-
-    The `do_foo` calls in shell.py will receive CLI args and then in turn pass
-    them through to the ResourceManager. Before passing through the args, the
-    hooks registered here will be called, giving us a chance to add extra
-    kwargs (taken from the command-line) to what's passed to the
-    ResourceManager.
-    """
-    if not hasattr(f, 'resource_manager_kwargs_hooks'):
-        f.resource_manager_kwargs_hooks = []
-
-    names = [h.__name__ for h in f.resource_manager_kwargs_hooks]
-    if hook.__name__ not in names:
-        f.resource_manager_kwargs_hooks.append(hook)
-
-
-def get_resource_manager_extra_kwargs(f, args, allow_conflicts=False):
-    """Return extra_kwargs by calling resource manager kwargs hooks."""
-    hooks = getattr(f, "resource_manager_kwargs_hooks", [])
-    extra_kwargs = {}
-    for hook in hooks:
-        hook_kwargs = hook(args)
-        hook_name = hook.__name__
-        conflicting_keys = set(hook_kwargs.keys()) & set(extra_kwargs.keys())
-        if conflicting_keys and not allow_conflicts:
-            msg = (_("Hook '%(hook_name)s' is attempting to redefine "
-                     "attributes '%(conflicting_keys)s'") %
-                   {'hook_name': hook_name,
-                    'conflicting_keys': conflicting_keys})
-            raise exceptions.NoUniqueMatch(msg)
-
-        extra_kwargs.update(hook_kwargs)
-
-    return extra_kwargs
 
 
 def pretty_choice_list(l):
@@ -436,11 +402,9 @@ def record_time(times, enabled, *args):
     """Record the time of a specific action.
 
     :param times: A list of tuples holds time data.
-    :type times: list
     :param enabled: Whether timing is enabled.
-    :type enabled: bool
-    :param *args: Other data to be stored besides time data, these args
-                  will be joined to a string.
+    :param args: Other data to be stored besides time data, these args
+        will be joined to a string.
     """
     if not enabled:
         yield
@@ -453,5 +417,15 @@ def record_time(times, enabled, *args):
 
 def prepare_query_string(params):
     """Convert dict params to query string"""
+    # Transform the dict to a sequence of two-element tuples in fixed
+    # order, then the encoded string will be consistent in Python 2&3.
+    if not params:
+        return ''
     params = sorted(params.items(), key=lambda x: x[0])
     return '?%s' % parse.urlencode(params) if params else ''
+
+
+def get_url_with_filter(url, filters):
+    query_string = prepare_query_string(filters)
+    url = "%s%s" % (url, query_string)
+    return url

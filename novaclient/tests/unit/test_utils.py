@@ -380,26 +380,6 @@ class ValidationsTestCase(test_utils.TestCase):
                 self.assertIn(key, str(ce))
 
 
-class ResourceManagerExtraKwargsHookTestCase(test_utils.TestCase):
-    def test_get_resource_manager_extra_kwargs_hook_test(self):
-        do_foo = mock.MagicMock()
-
-        def hook1(args):
-            return {'kwarg1': 'v_hook1'}
-
-        def hook2(args):
-            return {'kwarg1': 'v_hook2'}
-        do_foo.resource_manager_kwargs_hooks = [hook1, hook2]
-        args = {}
-        exc = self.assertRaises(exceptions.NoUniqueMatch,
-                                utils.get_resource_manager_extra_kwargs,
-                                do_foo,
-                                args)
-        except_error = ("Hook 'hook2' is attempting to redefine "
-                        "attributes")
-        self.assertIn(except_error, six.text_type(exc))
-
-
 class DoActionOnManyTestCase(test_utils.TestCase):
 
     def _test_do_action_on_many(self, side_effect, fail):
@@ -443,19 +423,31 @@ class RecordTimeTestCase(test_utils.TestCase):
 
 
 class PrepareQueryStringTestCase(test_utils.TestCase):
-    def test_convert_dict_to_string(self):
-        ustr = b'?\xd0\xbf=1&\xd1\x80=2'
+
+    def setUp(self):
+        super(PrepareQueryStringTestCase, self).setUp()
+        self.ustr = b'?\xd0\xbf=1&\xd1\x80=2'
         if six.PY3:
             # in py3 real unicode symbols will be urlencoded
-            ustr = ustr.decode('utf8')
-        cases = (
+            self.ustr = self.ustr.decode('utf8')
+        self.cases = (
             ({}, ''),
+            (None, ''),
             ({'2': 2, '10': 1}, '?10=1&2=2'),
             ({'abc': 1, 'abc1': 2}, '?abc=1&abc1=2'),
-            ({b'\xd0\xbf': 1, b'\xd1\x80': 2}, ustr),
+            ({b'\xd0\xbf': 1, b'\xd1\x80': 2}, self.ustr),
             ({(1, 2): '1', (3, 4): '2'}, '?(1, 2)=1&(3, 4)=2')
         )
-        for case in cases:
+
+    def test_convert_dict_to_string(self):
+        for case in self.cases:
             self.assertEqual(
                 case[1],
                 parse.unquote_plus(utils.prepare_query_string(case[0])))
+
+    def test_get_url_with_filter(self):
+        url = '/fake'
+        for case in self.cases:
+            self.assertEqual(
+                '%s%s' % (url, case[1]),
+                parse.unquote_plus(utils.get_url_with_filter(url, case[0])))

@@ -23,15 +23,13 @@ from novaclient.v2 import aggregates
 from novaclient.v2 import assisted_volume_snapshots
 from novaclient.v2 import availability_zones
 from novaclient.v2 import cells
-from novaclient.v2 import certs
-from novaclient.v2 import cloudpipe
 from novaclient.v2 import contrib
 from novaclient.v2 import flavor_access
 from novaclient.v2 import flavors
-from novaclient.v2 import hosts
 from novaclient.v2 import hypervisors
 from novaclient.v2 import images
 from novaclient.v2 import instance_action
+from novaclient.v2 import instance_usage_audit_log
 from novaclient.v2 import keypairs
 from novaclient.v2 import limits
 from novaclient.v2 import list_extensions
@@ -46,7 +44,6 @@ from novaclient.v2 import servers
 from novaclient.v2 import services
 from novaclient.v2 import usage
 from novaclient.v2 import versions
-from novaclient.v2 import virtual_interfaces
 from novaclient.v2 import volumes
 
 
@@ -149,18 +146,13 @@ class Client(object):
 
         # extensions
         self.agents = agents.AgentsManager(self)
-        self.cloudpipe = cloudpipe.CloudpipeManager(self)
-        self.certs = certs.CertificateManager(self)
         self.volumes = volumes.VolumeManager(self)
         self.keypairs = keypairs.KeypairManager(self)
         self.neutron = networks.NeutronManager(self)
         self.quota_classes = quota_classes.QuotaClassSetManager(self)
         self.quotas = quotas.QuotaSetManager(self)
         self.usage = usage.UsageManager(self)
-        self.virtual_interfaces = \
-            virtual_interfaces.VirtualInterfaceManager(self)
         self.aggregates = aggregates.AggregateManager(self)
-        self.hosts = hosts.HostManager(self)
         self.hypervisors = hypervisors.HypervisorManager(self)
         self.hypervisor_stats = hypervisors.HypervisorStatsManager(self)
         self.services = services.ServiceManager(self)
@@ -178,6 +170,8 @@ class Client(object):
             assisted_volume_snapshots.AssistedSnapshotManager(self)
         self.cells = cells.CellsManager(self)
         self.instance_action = instance_action.InstanceActionManager(self)
+        self.instance_usage_audit_log = \
+            instance_usage_audit_log.InstanceUsageAuditLogManager(self)
         self.list_extensions = list_extensions.ListExtManager(self)
         self.migrations = migrations.MigrationManager(self)
         self.server_external_events = \

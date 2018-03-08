@@ -20,7 +20,6 @@ Server interface.
 """
 
 import base64
-import warnings
 
 from oslo_utils import encodeutils
 import six
@@ -52,12 +51,6 @@ CONSOLE_TYPE_PROTOCOL_MAPPING = {
     'webmks': 'mks'
 }
 
-ADD_REMOVE_FIXED_FLOATING_DEPRECATION_WARNING = _(
-    'The %s server action API is deprecated as of the 2.44 microversion. This '
-    'API binding will be removed in the first major release after the Nova '
-    '16.0.0 Pike release. Use python-neutronclient or openstacksdk instead.'
-)
-
 
 class Server(base.Resource):
     HUMAN_ID = True
@@ -76,7 +69,7 @@ class Server(base.Resource):
     @api_versions.wraps("2.0", "2.18")
     def update(self, name=None):
         """
-        Update the name and the description for this server.
+        Update the name for this server.
 
         :param name: Update the server's name.
         :returns: :class:`Server`
@@ -171,35 +164,6 @@ class Server(base.Resource):
 
         """
         return self.manager.clear_password(self)
-
-    def add_fixed_ip(self, network_id):
-        """
-        Add an IP address on a network.
-
-        :param network_id: The ID of the network the IP should be on.
-        :returns: An instance of novaclient.base.TupleWithMeta
-        """
-        return self.manager.add_fixed_ip(self, network_id)
-
-    def add_floating_ip(self, address, fixed_address=None):
-        """
-        Add floating IP to an instance
-
-        :param address: The IP address or FloatingIP to add to the instance
-        :param fixed_address: The fixedIP address the FloatingIP is to be
-               associated with (optional)
-        :returns: An instance of novaclient.base.TupleWithMeta
-        """
-        return self.manager.add_floating_ip(self, address, fixed_address)
-
-    def remove_floating_ip(self, address):
-        """
-        Remove floating IP from an instance
-
-        :param address: The IP address or FloatingIP to remove
-        :returns: An instance of novaclient.base.TupleWithMeta
-        """
-        return self.manager.remove_floating_ip(self, address)
 
     def stop(self):
         """
@@ -327,6 +291,7 @@ class Server(base.Resource):
         """Diagnostics -- Retrieve server diagnostics."""
         return self.manager.diagnostics(self)
 
+    @api_versions.wraps("2.0", "2.55")
     def migrate(self):
         """
         Migrate a server to a new host.
@@ -335,14 +300,15 @@ class Server(base.Resource):
         """
         return self.manager.migrate(self)
 
-    def remove_fixed_ip(self, address):
+    @api_versions.wraps("2.56")
+    def migrate(self, host=None):
         """
-        Remove an IP address.
+        Migrate a server to a new host.
 
-        :param address: The IP address to remove.
+        :param host: (Optional) The target host.
         :returns: An instance of novaclient.base.TupleWithMeta
         """
-        return self.manager.remove_fixed_ip(self, address)
+        return self.manager.migrate(self, host=host)
 
     def change_password(self, password):
         """
@@ -655,9 +621,30 @@ class SecurityGroup(base.Resource):
 class ServerManager(base.BootingManagerWithFind):
     resource_class = Server
 
-    def _boot(self, resource_url, response_key, name, image, flavor,
+    @staticmethod
+    def transform_userdata(userdata):
+        if hasattr(userdata, 'read'):
+            userdata = userdata.read()
+
+        # NOTE(melwitt): Text file data is converted to bytes prior to
+        # base64 encoding. The utf-8 encoding will fail for binary files.
+        if six.PY3:
+            try:
+                userdata = userdata.encode("utf-8")
+            except AttributeError:
+                # In python 3, 'bytes' object has no attribute 'encode'
+                pass
+        else:
+            try:
+                userdata = encodeutils.safe_encode(userdata)
+            except UnicodeDecodeError:
+                pass
+
+        return base64.b64encode(userdata).decode('utf-8')
+
+    def _boot(self, response_key, name, image, flavor,
               meta=None, files=None, userdata=None,
-              reservation_id=None, return_raw=False, min_count=None,
+              reservation_id=False, return_raw=False, min_count=None,
               max_count=None, security_groups=None, key_name=None,
               availability_zone=None, block_device_mapping=None,
               block_device_mapping_v2=None, nics=None, scheduler_hints=None,
@@ -673,29 +660,12 @@ class ServerManager(base.BootingManagerWithFind):
             "flavorRef": str(base.getid(flavor)),
         }}
         if userdata:
-            if hasattr(userdata, 'read'):
-                userdata = userdata.read()
-
-            # NOTE(melwitt): Text file data is converted to bytes prior to
-            # base64 encoding. The utf-8 encoding will fail for binary files.
-            if six.PY3:
-                try:
-                    userdata = userdata.encode("utf-8")
-                except AttributeError:
-                    # In python 3, 'bytes' object has no attribute 'encode'
-                    pass
-            else:
-                try:
-                    userdata = encodeutils.safe_encode(userdata)
-                except UnicodeDecodeError:
-                    pass
-
-            userdata_b64 = base64.b64encode(userdata).decode('utf-8')
-            body["server"]["user_data"] = userdata_b64
+            body["server"]["user_data"] = self.transform_userdata(userdata)
         if meta:
             body["server"]["metadata"] = meta
         if reservation_id:
-            body["server"]["reservation_id"] = reservation_id
+            body["server"]["return_reservation_id"] = reservation_id
+            return_raw = True
         if key_name:
             body["server"]["key_name"] = key_name
         if scheduler_hints:
@@ -798,7 +768,7 @@ class ServerManager(base.BootingManagerWithFind):
         if tags:
             body['server']['tags'] = tags
 
-        return self._create(resource_url, body, response_key,
+        return self._create('/servers', body, response_key,
                             return_raw=return_raw, **kwargs)
 
     def get(self, server):
@@ -820,7 +790,7 @@ class ServerManager(base.BootingManagerWithFind):
             match the search_opts (optional). The search opts format is a
             dictionary of key / value pairs that will be appended to the query
             string.  For a complete list of keys see:
-            http://developer.openstack.org/api-ref-compute-v2.1.html#listServers
+            https://developer.openstack.org/api-ref/compute/#list-servers
         :param marker: Begin returning servers that appear later in the server
                        list than that represented by this server id (optional).
         :param limit: Maximum number of servers to return (optional).
@@ -885,73 +855,13 @@ class ServerManager(base.BootingManagerWithFind):
             result.extend(servers)
             result.append_request_ids(servers.request_ids)
 
-            if not servers or limit != -1:
+            if limit and limit != -1:
+                limit = max(limit - len(servers), 0)
+
+            if not servers or limit == 0:
                 break
             marker = result[-1].id
         return result
-
-    @api_versions.wraps('2.0', '2.43')
-    def add_fixed_ip(self, server, network_id):
-        """
-        DEPRECATED Add an IP address on a network.
-
-        :param server: The :class:`Server` (or its ID) to add an IP to.
-        :param network_id: The ID of the network the IP should be on.
-        :returns: An instance of novaclient.base.TupleWithMeta
-        """
-        warnings.warn(ADD_REMOVE_FIXED_FLOATING_DEPRECATION_WARNING %
-                      'addFixedIP', DeprecationWarning)
-        return self._action('addFixedIp', server, {'networkId': network_id})
-
-    @api_versions.wraps('2.0', '2.43')
-    def remove_fixed_ip(self, server, address):
-        """
-        DEPRECATED Remove an IP address.
-
-        :param server: The :class:`Server` (or its ID) to add an IP to.
-        :param address: The IP address to remove.
-        :returns: An instance of novaclient.base.TupleWithMeta
-        """
-        warnings.warn(ADD_REMOVE_FIXED_FLOATING_DEPRECATION_WARNING %
-                      'removeFixedIP', DeprecationWarning)
-        return self._action('removeFixedIp', server, {'address': address})
-
-    @api_versions.wraps('2.0', '2.43')
-    def add_floating_ip(self, server, address, fixed_address=None):
-        """
-        DEPRECATED Add a floating IP to an instance
-
-        :param server: The :class:`Server` (or its ID) to add an IP to.
-        :param address: The FloatingIP or string floating address to add.
-        :param fixed_address: The FixedIP the floatingIP should be
-                              associated with (optional)
-        :returns: An instance of novaclient.base.TupleWithMeta
-        """
-        warnings.warn(ADD_REMOVE_FIXED_FLOATING_DEPRECATION_WARNING %
-                      'addFloatingIP', DeprecationWarning)
-        address = address.ip if hasattr(address, 'ip') else address
-        if fixed_address:
-            if hasattr(fixed_address, 'ip'):
-                fixed_address = fixed_address.ip
-            return self._action('addFloatingIp', server,
-                                {'address': address,
-                                 'fixed_address': fixed_address})
-        else:
-            return self._action('addFloatingIp', server, {'address': address})
-
-    @api_versions.wraps('2.0', '2.43')
-    def remove_floating_ip(self, server, address):
-        """
-        DEPRECATED Remove a floating IP address.
-
-        :param server: The :class:`Server` (or its ID) to remove an IP from.
-        :param address: The FloatingIP or string floating address to remove.
-        :returns: An instance of novaclient.base.TupleWithMeta
-        """
-        warnings.warn(ADD_REMOVE_FIXED_FLOATING_DEPRECATION_WARNING %
-                      'removeFloatingIP', DeprecationWarning)
-        address = address.ip if hasattr(address, 'ip') else address
-        return self._action('removeFloatingIp', server, {'address': address})
 
     def get_vnc_console(self, server, console_type):
         """
@@ -1278,7 +1188,7 @@ class ServerManager(base.BootingManagerWithFind):
                              type(nics))
 
     def create(self, name, image, flavor, meta=None, files=None,
-               reservation_id=None, min_count=None,
+               reservation_id=False, min_count=None,
                max_count=None, security_groups=None, userdata=None,
                key_name=None, availability_zone=None,
                block_device_mapping=None, block_device_mapping_v2=None,
@@ -1300,7 +1210,9 @@ class ServerManager(base.BootingManagerWithFind):
                       are the file contents (either as a string or as a
                       file-like object). A maximum of five entries is allowed,
                       and each file must be 10k or less.
-        :param reservation_id: a UUID for the set of servers being requested.
+                      (deprecated starting with microversion 2.57)
+        :param reservation_id: return a reservation_id for the set of
+                               servers being requested, boolean.
         :param min_count: (optional extension) The minimum number of
                           servers to launch.
         :param max_count: (optional extension) The maximum number of
@@ -1379,6 +1291,10 @@ class ServerManager(base.BootingManagerWithFind):
         if "tags" in kwargs and self.api_version < boot_tags_microversion:
             raise exceptions.UnsupportedAttribute("tags", "2.52")
 
+        personality_files_deprecation = api_versions.APIVersion('2.57')
+        if files and self.api_version >= personality_files_deprecation:
+            raise exceptions.UnsupportedAttribute('files', '2.0', '2.56')
+
         boot_kwargs = dict(
             meta=meta, files=files, userdata=userdata,
             reservation_id=reservation_id, min_count=min_count,
@@ -1389,19 +1305,15 @@ class ServerManager(base.BootingManagerWithFind):
             access_ip_v4=access_ip_v4, access_ip_v6=access_ip_v6, **kwargs)
 
         if block_device_mapping:
-            resource_url = "/os-volumes_boot"
             boot_kwargs['block_device_mapping'] = block_device_mapping
         elif block_device_mapping_v2:
-            resource_url = "/os-volumes_boot"
             boot_kwargs['block_device_mapping_v2'] = block_device_mapping_v2
-        else:
-            resource_url = "/servers"
+
         if nics:
             boot_kwargs['nics'] = nics
 
-        response_key = "server"
-        return self._boot(resource_url, response_key, *boot_args,
-                          **boot_kwargs)
+        response_key = "server" if not reservation_id else "reservation_id"
+        return self._boot(response_key, *boot_args, **boot_kwargs)
 
     @api_versions.wraps("2.0", "2.18")
     def update(self, server, name=None):
@@ -1496,13 +1408,36 @@ class ServerManager(base.BootingManagerWithFind):
                       are the file contents (either as a string or as a
                       file-like object). A maximum of five entries is allowed,
                       and each file must be 10k or less.
+                      (deprecated starting with microversion 2.57)
         :param description: optional description of the server (allowed since
                             microversion 2.19)
+        :param key_name: optional key pair name for rebuild operation; passing
+                         None will unset the key for the server instance
+                         (starting from microversion 2.54)
+        :param userdata: optional user data to pass to be exposed by the
+                         metadata server; this can be a file type object as
+                         well or a string. If None is specified, the existing
+                         user_data is unset.
+                         (starting from microversion 2.57)
         :returns: :class:`Server`
         """
         descr_microversion = api_versions.APIVersion("2.19")
         if "description" in kwargs and self.api_version < descr_microversion:
             raise exceptions.UnsupportedAttribute("description", "2.19")
+
+        # Starting from microversion 2.54,
+        # the optional 'key_name' parameter has been added.
+        if ('key_name' in kwargs and
+                self.api_version < api_versions.APIVersion('2.54')):
+            raise exceptions.UnsupportedAttribute('key_name', '2.54')
+
+        # Microversion 2.57 deprecates personality files and adds support
+        # for user_data.
+        files_and_userdata = api_versions.APIVersion('2.57')
+        if files and self.api_version >= files_and_userdata:
+            raise exceptions.UnsupportedAttribute('files', '2.0', '2.56')
+        if 'userdata' in kwargs and self.api_version < files_and_userdata:
+            raise exceptions.UnsupportedAttribute('userdata', '2.57')
 
         body = {'imageRef': base.getid(image)}
         if password is not None:
@@ -1515,6 +1450,8 @@ class ServerManager(base.BootingManagerWithFind):
             body['name'] = name
         if "description" in kwargs:
             body["description"] = kwargs["description"]
+        if 'key_name' in kwargs:
+            body['key_name'] = kwargs['key_name']
         if meta:
             body['metadata'] = meta
         if files:
@@ -1531,11 +1468,18 @@ class ServerManager(base.BootingManagerWithFind):
                     'path': filepath,
                     'contents': cont,
                 })
+        if 'userdata' in kwargs:
+            # If userdata is specified but None, it means unset the existing
+            # user_data on the instance.
+            userdata = kwargs['userdata']
+            body['user_data'] = (userdata if userdata is None else
+                                 self.transform_userdata(userdata))
 
         resp, body = self._action_return_resp_and_body('rebuild', server,
                                                        body, **kwargs)
         return Server(self, body['server'], resp=resp)
 
+    @api_versions.wraps("2.0", "2.55")
     def migrate(self, server):
         """
         Migrate a server to a new host.
@@ -1544,6 +1488,22 @@ class ServerManager(base.BootingManagerWithFind):
         :returns: An instance of novaclient.base.TupleWithMeta
         """
         return self._action('migrate', server)
+
+    @api_versions.wraps("2.56")
+    def migrate(self, server, host=None):
+        """
+        Migrate a server to a new host.
+
+        :param server: The :class:`Server` (or its ID).
+        :param host: (Optional) The target host.
+        :returns: An instance of novaclient.base.TupleWithMeta
+        """
+        info = {}
+
+        if host:
+            info['host'] = host
+
+        return self._action('migrate', server, info)
 
     def resize(self, server, flavor, disk_config=None, **kwargs):
         """

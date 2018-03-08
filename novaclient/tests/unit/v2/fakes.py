@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import datetime
 import re
 
@@ -123,6 +124,8 @@ class FakeSessionClient(base_client.SessionClient):
             munged_url = munged_url.replace(' ', '_')
             munged_url = munged_url.replace('!', '_')
             munged_url = munged_url.replace('@', '_')
+            munged_url = munged_url.replace('%20', '_')
+            munged_url = munged_url.replace('%3A', '_')
             callback = "%s_%s" % (method.lower(), munged_url)
 
         if url is None or callback == "get_http:__nova_api:8774":
@@ -330,6 +333,14 @@ class FakeSessionClient(base_client.SessionClient):
     #
 
     def get_limits(self, **kw):
+        absolute = {
+            "maxTotalRAMSize": 51200,
+            "maxServerMeta": 5,
+            "maxImageMeta": 5
+        }
+        # 2.57 removes injected_file* entries from the response.
+        if self.api_version < api_versions.APIVersion('2.57'):
+            absolute.update({"maxPersonality": 5, "maxPersonalitySize": 10240})
         return (200, {}, {"limits": {
             "rate": [
                 {
@@ -373,13 +384,7 @@ class FakeSessionClient(base_client.SessionClient):
                     ]
                 }
             ],
-            "absolute": {
-                "maxTotalRAMSize": 51200,
-                "maxServerMeta": 5,
-                "maxImageMeta": 5,
-                "maxPersonality": 5,
-                "maxPersonalitySize": 10240
-            },
+            "absolute": absolute,
         }})
 
     #
@@ -387,6 +392,8 @@ class FakeSessionClient(base_client.SessionClient):
     #
 
     def get_servers(self, **kw):
+        if kw.get('marker') == '9014':
+            return (200, {}, {"servers": []})
         return (200, {}, {"servers": [
             {'id': '1234', 'name': 'sample-server'},
             {'id': '5678', 'name': 'sample-server2'},
@@ -394,6 +401,8 @@ class FakeSessionClient(base_client.SessionClient):
         ]})
 
     def get_servers_detail(self, **kw):
+        if kw.get('marker') == '9014':
+            return (200, {}, {"servers": []})
         return (200, {}, {"servers": [
             {
                 "id": '1234',
@@ -630,6 +639,12 @@ class FakeSessionClient(base_client.SessionClient):
     def post_servers_uuid4_metadata(self, **kw):
         return (204, {}, {'metadata': {'key1': 'val1'}})
 
+    def post_servers_uuid5_metadata(self, **kw):
+        return (204, {}, {'metadata': {'key1': 'val1'}})
+
+    def post_servers_uuid6_metadata(self, **kw):
+        return (204, {}, {'metadata': {'key1': 'val1'}})
+
     def delete_servers_uuid1_metadata_key1(self, **kw):
         return (200, {}, {'data': 'Fake diagnostics'})
 
@@ -640,6 +655,12 @@ class FakeSessionClient(base_client.SessionClient):
         return (200, {}, {'data': 'Fake diagnostics'})
 
     def delete_servers_uuid4_metadata_key1(self, **kw):
+        return (200, {}, {'data': 'Fake diagnostics'})
+
+    def delete_servers_uuid5_metadata_key1(self, **kw):
+        return (200, {}, {'data': 'Fake diagnostics'})
+
+    def delete_servers_uuid6_metadata_key1(self, **kw):
         return (200, {}, {'data': 'Fake diagnostics'})
 
     def get_servers_1234_os_security_groups(self, **kw):
@@ -686,7 +707,7 @@ class FakeSessionClient(base_client.SessionClient):
     # Server actions
     #
 
-    none_actions = ['revertResize', 'migrate', 'os-stop', 'os-start',
+    none_actions = ['revertResize', 'os-stop', 'os-start',
                     'forceDelete', 'restore', 'pause', 'unpause', 'unlock',
                     'unrescue', 'resume', 'suspend', 'lock', 'shelve',
                     'shelveOffload', 'unshelve', 'resetNetwork']
@@ -703,13 +724,6 @@ class FakeSessionClient(base_client.SessionClient):
             assert 'flavorRef' in body[action]
         elif action in cls.none_actions:
             assert body[action] is None
-        elif action == 'addFixedIp':
-            assert list(body[action]) == ['networkId']
-        elif action in ['removeFixedIp', 'removeFloatingIp']:
-            assert list(body[action]) == ['address']
-        elif action == 'addFloatingIp':
-            assert (list(body[action]) == ['address'] or
-                    sorted(list(body[action])) == ['address', 'fixed_address'])
         elif action == 'changePassword':
             assert list(body[action]) == ['adminPass']
         elif action in cls.type_actions:
@@ -748,6 +762,15 @@ class FakeSessionClient(base_client.SessionClient):
             if self.api_version < api_versions.APIVersion("2.25"):
                 expected.add('disk_over_commit')
             assert set(body[action].keys()) == expected
+        elif action == 'migrate':
+            if self.api_version < api_versions.APIVersion("2.56"):
+                assert body[action] is None
+            else:
+                expected = set()
+                if 'host' in body[action].keys():
+                    # host can be optional
+                    expected.add('host')
+                assert set(body[action].keys()) == expected
         elif action == 'rebuild':
             body = body[action]
             adminPass = body.get('adminPass', 'randompassword')
@@ -806,35 +829,17 @@ class FakeSessionClient(base_client.SessionClient):
         return self.post_servers_1234_action(body, **kw)
 
     #
-    # Cloudpipe
-    #
-
-    def get_os_cloudpipe(self, **kw):
-        return (
-            200,
-            {},
-            {'cloudpipes': [{'project_id': 1}]}
-        )
-
-    def post_os_cloudpipe(self, **ks):
-        return (
-            202,
-            {},
-            {'instance_id': '9d5824aa-20e6-4b9f-b967-76a699fc51fd'}
-        )
-
-    def put_os_cloudpipe_configure_project(self, **kw):
-        return (202, {}, None)
-
-    #
     # Flavors
     #
 
     def get_flavors(self, **kw):
         status, header, flavors = self.get_flavors_detail(**kw)
+        included_fields = ['id', 'name']
+        if self.api_version >= api_versions.APIVersion('2.55'):
+            included_fields.append('description')
         for flavor in flavors['flavors']:
             for k in list(flavor):
-                if k not in ['id', 'name']:
+                if k not in included_fields:
                     del flavor[k]
 
         return (200, FAKE_RESPONSE_HEADERS, flavors)
@@ -879,6 +884,18 @@ class FakeSessionClient(base_client.SessionClient):
                     v for v in flavors['flavors']
                     if not v['os-flavor-access:is_public']
                 ]
+
+        # Add description in the response for all flavors.
+        if self.api_version >= api_versions.APIVersion('2.55'):
+            for flavor in flavors['flavors']:
+                flavor['description'] = None
+            # Add a new flavor that is a copy of the first but with a different
+            # name, flavorid and a description set.
+            new_flavor = copy.deepcopy(flavors['flavors'][0])
+            new_flavor['id'] = 'with-description'
+            new_flavor['name'] = 'with-description'
+            new_flavor['description'] = 'test description'
+            flavors['flavors'].append(new_flavor)
 
         return (200, FAKE_RESPONSE_HEADERS, flavors)
 
@@ -937,6 +954,14 @@ class FakeSessionClient(base_client.SessionClient):
                 self.get_flavors_detail(is_public='None')[2]['flavors'][2]}
         )
 
+    def get_flavors_with_description(self, **kw):
+        return (
+            200,
+            {},
+            {'flavor':
+                self.get_flavors_detail(is_public='None')[2]['flavors'][-1]}
+        )
+
     def delete_flavors_flavordelete(self, **kw):
         return (202, FAKE_RESPONSE_HEADERS, None)
 
@@ -950,6 +975,14 @@ class FakeSessionClient(base_client.SessionClient):
             {'flavor':
                 self.get_flavors_detail(is_public='None')[2]['flavors'][0]}
         )
+
+    def put_flavors_with_description(self, body, **kw):
+        assert 'flavor' in body
+        assert 'description' in body['flavor']
+        flavor = self.get_flavors_with_description(**kw)[2]
+        # Fake out the actual update of the flavor description for the response
+        flavor['description'] = body['flavor']['description']
+        return (200, {}, {'flavor': flavor})
 
     def get_flavors_1_os_extra_specs(self, **kw):
         return (
@@ -1113,14 +1146,6 @@ class FakeSessionClient(base_client.SessionClient):
                               required=['name'])
         r = {'keypair': self.get_os_keypairs()[2]['keypairs'][0]['keypair']}
         return (202, {}, r)
-
-    #
-    # Virtual Interfaces
-    #
-    def get_servers_1234_os_virtual_interfaces(self, **kw):
-        return (200, {}, {"virtual_interfaces": [
-            {'id': 'fakeid', 'mac_address': 'fakemac'}
-        ]})
 
     #
     # Quotas
@@ -1292,6 +1317,19 @@ class FakeSessionClient(base_client.SessionClient):
     #
 
     def get_os_quota_class_sets_test(self, **kw):
+        # 2.57 removes injected_file* entries from the response.
+        if self.api_version >= api_versions.APIVersion('2.57'):
+            return (200, FAKE_RESPONSE_HEADERS, {
+                'quota_class_set': {
+                    'id': 'test',
+                    'metadata_items': 1,
+                    'ram': 1,
+                    'instances': 1,
+                    'cores': 1,
+                    'key_pairs': 1,
+                    'server_groups': 1,
+                    'server_group_members': 1}})
+
         if self.api_version >= api_versions.APIVersion('2.50'):
             return (200, FAKE_RESPONSE_HEADERS, {
                 'quota_class_set': {
@@ -1324,6 +1362,18 @@ class FakeSessionClient(base_client.SessionClient):
 
     def put_os_quota_class_sets_test(self, body, **kw):
         assert list(body) == ['quota_class_set']
+        # 2.57 removes injected_file* entries from the response.
+        if self.api_version >= api_versions.APIVersion('2.57'):
+            return (200, {}, {
+                'quota_class_set': {
+                    'metadata_items': 1,
+                    'ram': 1,
+                    'instances': 1,
+                    'cores': 1,
+                    'key_pairs': 1,
+                    'server_groups': 1,
+                    'server_group_members': 1}})
+
         if self.api_version >= api_versions.APIVersion('2.50'):
             return (200, {}, {
                 'quota_class_set': {
@@ -1652,42 +1702,8 @@ class FakeSessionClient(base_client.SessionClient):
             'forced_down': False}})
 
     #
-    # Hosts
+    # Hypervisors
     #
-
-    def get_os_hosts(self, **kw):
-        zone = kw.get('zone', 'nova1')
-        return (200, {}, {'hosts': [{'host': 'host1',
-                                     'service': 'nova-compute',
-                                     'zone': zone},
-                                    {'host': 'host1',
-                                     'service': 'nova-cert',
-                                     'zone': zone}]})
-
-    def put_os_hosts_sample_host_1(self, body, **kw):
-        return (200, {}, {'host': 'sample-host_1',
-                          'status': 'enabled'})
-
-    def put_os_hosts_sample_host_2(self, body, **kw):
-        return (200, {}, {'host': 'sample-host_2',
-                          'maintenance_mode': 'on_maintenance'})
-
-    def put_os_hosts_sample_host_3(self, body, **kw):
-        return (200, {}, {'host': 'sample-host_3',
-                          'status': 'enabled',
-                          'maintenance_mode': 'on_maintenance'})
-
-    def get_os_hosts_sample_host_reboot(self, **kw):
-        return (200, {}, {'host': 'sample_host',
-                          'power_action': 'reboot'})
-
-    def get_os_hosts_sample_host_startup(self, **kw):
-        return (200, {}, {'host': 'sample_host',
-                          'power_action': 'startup'})
-
-    def get_os_hosts_sample_host_shutdown(self, **kw):
-        return (200, {}, {'host': 'sample_host',
-                          'power_action': 'shutdown'})
 
     def get_os_hypervisors(self, **kw):
         return (200, {}, {
@@ -1768,6 +1784,26 @@ class FakeSessionClient(base_client.SessionClient):
                  'servers': [
                      {'name': 'inst1', 'uuid': 'uuid1'},
                      {'name': 'inst2', 'uuid': 'uuid2'}]},
+                {'id': 5678,
+                 'hypervisor_hostname': 'hyper2',
+                 'servers': [
+                     {'name': 'inst3', 'uuid': 'uuid3'},
+                     {'name': 'inst4', 'uuid': 'uuid4'}]}]
+        })
+
+    def get_os_hypervisors_hyper1_servers(self, **kw):
+        return (200, {}, {
+            'hypervisors': [
+                {'id': 1234,
+                 'hypervisor_hostname': 'hyper1',
+                 'servers': [
+                     {'name': 'inst1', 'uuid': 'uuid1'},
+                     {'name': 'inst2', 'uuid': 'uuid2'}]}]
+        })
+
+    def get_os_hypervisors_hyper2_servers(self, **kw):
+        return (200, {}, {
+            'hypervisors': [
                 {'id': 5678,
                  'hypervisor_hostname': 'hyper2',
                  'servers': [
@@ -1950,26 +1986,111 @@ class FakeSessionClient(base_client.SessionClient):
         return (200, FAKE_RESPONSE_HEADERS, {})
 
     def get_servers_1234_os_instance_actions(self, **kw):
-        return (200, FAKE_RESPONSE_HEADERS, {
-            "instanceActions":
-                [{"instance_uuid": "1234",
+        action = {"instance_uuid": "1234",
                   "user_id": "b968c25e04ab405f9fe4e6ca54cce9a5",
                   "start_time": "2013-03-25T13:45:09.000000",
                   "request_id": "req-abcde12345",
                   "action": "create",
                   "message": None,
-                  "project_id": "04019601fe3648c0abd4f4abfb9e6106"}]})
+                  "project_id": "04019601fe3648c0abd4f4abfb9e6106"}
+        if self.api_version >= api_versions.APIVersion('2.58'):
+            # This is intentionally different from the start_time.
+            action['updated_at'] = '2013-03-25T13:50:09.000000'
+        return (200, FAKE_RESPONSE_HEADERS, {
+            "instanceActions": [action]})
 
     def get_servers_1234_os_instance_actions_req_abcde12345(self, **kw):
+        action = {"instance_uuid": "1234",
+                  "user_id": "b968c25e04ab405f9fe4e6ca54cce9a5",
+                  "start_time": "2013-03-25T13:45:09.000000",
+                  "request_id": "req-abcde12345",
+                  "action": "create",
+                  "message": None,
+                  "project_id": "04019601fe3648c0abd4f4abfb9e6106"}
+        if self.api_version >= api_versions.APIVersion('2.58'):
+            action['updated_at'] = '2013-03-25T13:45:09.000000'
         return (200, FAKE_RESPONSE_HEADERS, {
-            "instanceAction":
-                {"instance_uuid": "1234",
-                 "user_id": "b968c25e04ab405f9fe4e6ca54cce9a5",
-                 "start_time": "2013-03-25T13:45:09.000000",
-                 "request_id": "req-abcde12345",
-                 "action": "create",
-                 "message": None,
-                 "project_id": "04019601fe3648c0abd4f4abfb9e6106"}})
+            "instanceAction": action})
+
+    def get_os_instance_usage_audit_log(self, **kw):
+        return (200, FAKE_RESPONSE_HEADERS, {
+            "instance_usage_audit_logs": {
+                "hosts_not_run": ["samplehost3"],
+                "log": {
+                    "samplehost0": {
+                        "errors": 1,
+                        "instances": 1,
+                        "message": ("Instance usage audit ran for host "
+                                    "samplehost0, 1 instances in 0.01 "
+                                    "seconds."),
+                        "state": "DONE"
+                    },
+                    "samplehost1": {
+                        "errors": 1,
+                        "instances": 2,
+                        "message": ("Instance usage audit ran for host "
+                                    "samplehost1, 2 instances in 0.01 "
+                                    "seconds."),
+                        "state": "DONE"
+                    },
+                    "samplehost2": {
+                        "errors": 1,
+                        "instances": 3,
+                        "message": ("Instance usage audit ran for host "
+                                    "samplehost2, 3 instances in 0.01 "
+                                    "seconds."),
+                        "state": "DONE"
+                    },
+                },
+                "num_hosts": 4,
+                "num_hosts_done": 3,
+                "num_hosts_not_run": 1,
+                "num_hosts_running": 0,
+                "overall_status": "3 of 4 hosts done. 3 errors.",
+                "period_beginning": "2012-06-01 00:00:00",
+                "period_ending": "2012-07-01 00:00:00",
+                "total_errors": 3,
+                "total_instances": 6}})
+
+    def get_os_instance_usage_audit_log_2016_12_10_13_59_59_999999(self, **kw):
+        return (200, FAKE_RESPONSE_HEADERS, {
+            "instance_usage_audit_log": {
+                "hosts_not_run": ["samplehost3"],
+                "log": {
+                    "samplehost0": {
+                        "errors": 1,
+                        "instances": 1,
+                        "message": ("Instance usage audit ran for host "
+                                    "samplehost0, 1 instances in 0.01 "
+                                    "seconds."),
+                        "state": "DONE"
+                    },
+                    "samplehost1": {
+                        "errors": 1,
+                        "instances": 2,
+                        "message": ("Instance usage audit ran for host "
+                                    "samplehost1, 2 instances in 0.01 "
+                                    "seconds."),
+                        "state": "DONE"
+                    },
+                    "samplehost2": {
+                        "errors": 1,
+                        "instances": 3,
+                        "message": ("Instance usage audit ran for host "
+                                    "samplehost2, 3 instances in 0.01 "
+                                    "seconds."),
+                        "state": "DONE"
+                    },
+                },
+                "num_hosts": 4,
+                "num_hosts_done": 3,
+                "num_hosts_not_run": 1,
+                "num_hosts_running": 0,
+                "overall_status": "3 of 4 hosts done. 3 errors.",
+                "period_beginning": "2012-06-01 00:00:00",
+                "period_ending": "2012-07-01 00:00:00",
+                "total_errors": 3,
+                "total_instances": 6}})
 
     def post_servers_uuid1_action(self, **kw):
         return 202, {}, {}
@@ -1981,6 +2102,12 @@ class FakeSessionClient(base_client.SessionClient):
         return 202, {}, {}
 
     def post_servers_uuid4_action(self, **kw):
+        return 202, {}, {}
+
+    def post_servers_uuid5_action(self, **kw):
+        return 202, {}, {}
+
+    def post_servers_uuid6_action(self, **kw):
         return 202, {}, {}
 
     def get_os_cells_child_cell(self, **kw):
@@ -2045,6 +2172,10 @@ class FakeSessionClient(base_client.SessionClient):
         if self.api_version >= api_versions.APIVersion("2.23"):
             migration1.update({"migration_type": "live-migration"})
             migration2.update({"migration_type": "live-migration"})
+
+        if self.api_version >= api_versions.APIVersion("2.59"):
+            migration1.update({"uuid": "11111111-07d5-11e1-90e3-e3dffe0c5983"})
+            migration2.update({"uuid": "22222222-07d5-11e1-90e3-e3dffe0c5983"})
 
         migration_list = []
         instance_uuid = kw.get('instance_uuid', None)

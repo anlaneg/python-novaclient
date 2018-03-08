@@ -48,10 +48,6 @@ Get information about boot command::
 
     nova help boot
 
-List available images::
-
-    nova image-list
-
 List available flavors::
 
     nova flavor-list
@@ -76,7 +72,7 @@ Terminate an instance::
 SEE ALSO
 ========
 
-OpenStack Nova CLI Guide: http://docs.openstack.org/cli-reference/nova.html
+OpenStack Nova CLI Guide: https://docs.openstack.org/cli-reference/nova.html
 
 
 BUGS
